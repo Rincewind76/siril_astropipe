@@ -2,9 +2,9 @@
 
 **[Deutsch](#deutsch) · [English](#english)**
 
-Ein Python-Skript mit grafischer Oberfläche für [Siril](https://siril.org) ≥ 1.4, das OSC-Daten (One-Shot-Color) von den Rohdaten bis zum linearen, farbkalibrierten Stack verarbeitet – für ein Objekt, mehrere Sessions oder viele Objekte im Stapel. Optional folgt eine RC-Astro-Kette (BlurXTerminator, NoiseXTerminator, StarXTerminator), die getrennte lineare Stars- und Starless-Bilder liefert.
+Ein Python-Skript mit grafischer Oberfläche für [Siril](https://siril.org) ≥ 1.4, das OSC-Daten (One-Shot-Color) von den Rohdaten bis zum linearen, farbkalibrierten Stack verarbeitet – für ein Objekt, mehrere Sessions, Mosaike oder viele Objekte im Stapel. Optional folgt eine RC-Astro-Kette (BlurXTerminator, NoiseXTerminator, StarXTerminator), die getrennte lineare Stars- und Starless-Bilder liefert.
 
-A Python script with a graphical interface for [Siril](https://siril.org) ≥ 1.4 that takes OSC (one-shot colour) data from raw frames to a linear, colour-calibrated stack – for one target, multiple sessions or many targets in batch. An optional RC Astro chain (BlurXTerminator, NoiseXTerminator, StarXTerminator) produces separate linear stars and starless images.
+A Python script with a graphical interface for [Siril](https://siril.org) ≥ 1.4 that takes OSC (one-shot colour) data from raw frames to a linear, colour-calibrated stack – for one target, multiple sessions, mosaics or many targets in batch. An optional RC Astro chain (BlurXTerminator, NoiseXTerminator, StarXTerminator) produces separate linear stars and starless images.
 
 ---
 
@@ -29,6 +29,7 @@ A Python script with a graphical interface for [Siril](https://siril.org) ≥ 1.
 
 - **Multi-Session-Stacking:** Jede Session wird mit ihren eigenen Bias-, Flat- und Dark-Frames kalibriert. Danach werden alle Sessions gemeinsam registriert und zu einem Bild gestackt.
 - **Stapelmodus:** Verarbeitet alle Objektordner im Siril-Arbeitsverzeichnis nacheinander. Ein Fehler bei einem Objekt stoppt den Stapel nicht.
+- **Mosaik-Modus:** Stackt jedes Panel einzeln (auch mit mehreren Sessions pro Panel), entfernt den Hintergrund pro Panel und setzt die Panels astrometrisch zu einem Mosaik zusammen. Plate-Solving, SPCC und Postprocessing laufen einmal auf dem ganzen Mosaik. Kombinierbar mit dem Stapelmodus.
 - **Kalibrierung:** Master-Bias, Master-Flat und Master-Dark pro Session (jeweils optional), Cosmetic Correction aus dem Dark, CFA-Equalisierung, Debayer.
 - **Optionaler Hintergrundabzug pro Sub** (`seqsubsky`, Polynom 1. Grades).
 - **Registrierung:** 2-Pass mit `-framing=min` – das Ergebnis wird automatisch auf den Bereich beschnitten, den alle Frames abdecken.
@@ -55,6 +56,14 @@ alle Sessions: zu einer Sequenz zusammenlegen
                           │
 (optional)     BXT → NXT leicht → StarX → NXT-Hauptpass
                                                         ← Ergebnis 2: Stars / Starless linear
+```
+
+Im **Mosaik-Modus** wird der obere Teil (bis einschließlich Zusatz-Crop und GraXpert) für jedes Panel einzeln ausgeführt. Danach:
+
+```
+Panel-Stacks → seqplatesolve → seqapplyreg -framing=max
+            → stack (Overlap-Normalisierung, Feathering, -maximize)
+            → Plate-Solving → SPCC → Speichern → (optional) Postprocessing
 ```
 
 ### Voraussetzungen
@@ -111,7 +120,22 @@ Nur `light/` ist Pflicht; `bias/`, `flat/` und `dark/` sind optional. Die Ordner
 └── tmp_siril/                        ← wird ignoriert
 ```
 
-> **Achtung:** Ohne Stapelmodus wird **jeder** Unterordner mit `light/` als Session **desselben** Objekts behandelt. Wer Struktur C vergisst, den Stapelmodus zu aktivieren, bekommt z. B. M51 und M101 in einen gemeinsamen Stack. Enthält das Home sowohl Session-Unterordner als auch ein eigenes `light/`, werden nur die Unterordner verwendet.
+**D – Mosaik** (Checkbox *Mosaik-Modus* aktivieren)
+
+```
+<Home>/                         ← z. B. Heart
+├── Panel 1/
+│   ├── bias/  flat/  dark/  light/
+├── Panel 2/
+│   ├── Session a/   flat/ light/        ← mehrere Sessions pro Panel möglich
+│   └── Session b/   flat/ light/
+├── Panel 3/   ...
+└── Panel 4/   ...
+```
+
+Mit zusätzlich aktiviertem Stapelmodus gilt: Home → Objektordner → Panels → (Sessions). Für Flats und Darks, die für alle Panels gelten, die Dateien in jeden Panel-Ordner kopieren.
+
+> **Achtung:** Ohne Stapelmodus wird **jeder** Unterordner mit `light/` als Session **desselben** Objekts behandelt. Wer Struktur C vergisst, den Stapelmodus zu aktivieren, bekommt z. B. M51 und M101 in einen gemeinsamen Stack. Enthält das Home sowohl Session-Unterordner als auch ein eigenes `light/`, werden nur die Unterordner verwendet. Umgekehrt dürfen die Panels eines Mosaiks **nie** ohne Mosaik-Modus als Sessions gestackt werden – die Registrierung auf ein einziges Referenzbild und der Auto-Crop auf die gemeinsame Fläche machen das Ergebnis unbrauchbar.
 
 ### Bedienung
 
@@ -124,11 +148,12 @@ Nur `light/` ist Pflicht; `bias/`, `flat/` und `dark/` sind optional. Die Ordner
 | Teleskop / Reducer | EdgeHD 800 + 0.7x Reducer | Preset für Brennweite (Plate-Solving) und Dateinamen; „aus FITS-Header“ = Werte aus dem Header |
 | Kamera | Auto (aus INSTRUME) | Preset für Pixelgröße und SPCC-Sensor; „Auto“ erkennt den Sensor am FITS-Keyword `INSTRUME` |
 | Filter | leer | Für Dateinamen und FITS-Header; Liste oder freie Eingabe; leer = `FILTER` aus dem Header |
-| Zusatz-Crop % je Rand | 1.0 | Zusätzlicher Beschnitt je Seite nach dem Auto-Crop; 0 = aus |
-| Stapelmodus | aus | Alle Objektordner im Home verarbeiten (Struktur C) |
+| Zusatz-Crop % je Rand | 1.0 | Zusätzlicher Beschnitt je Seite nach dem Auto-Crop; 0 = aus. Im Mosaik-Modus pro Panel |
+| Mosaik-Modus | aus | Unterordner sind Panels eines Mosaiks (Struktur D) |
+| Stapelmodus | aus | Alle Objektordner im Home verarbeiten (Struktur C, mit Mosaik-Modus: Objekte aus Panels) |
 | Stapel-Ergebnisse gesammelt im Home | an | Nur im Stapelmodus: Ergebnisse ins Home statt in den jeweiligen Objektordner |
 | Hintergrund pro Sub (seqsubsky) | aus | Gradientenabzug auf jedem kalibrierten Sub, pro Session |
-| GraXpert auf finalen Stack | aus | KI-Hintergrundextraktion (Subtraktion, Glättung 0.5) |
+| GraXpert auf finalen Stack | aus | KI-Hintergrundextraktion (Subtraktion, Glättung 0.5). Im Mosaik-Modus pro Panel vor dem Zusammensetzen – für Mosaike dringend empfohlen |
 | Plate-Solving | an | Astrometrische Lösung des Stacks |
 | SPCC-Farbkalibration | an | Spectrophotometric Color Calibration (setzt Plate-Solving voraus) |
 | Postprocessing | aus | RC-Astro-Kette → Stars + Starless |
@@ -145,6 +170,8 @@ Nur `light/` ist Pflicht; `bias/`, `flat/` und `dark/` sind optional. Die Ordner
 Beispiel: `M51 - 2026-05-14 - 6h15m - 125x180s - L-Pro - EdgeHD800-0.7x - ASI2600MCDuo.fits`
 
 Fehlende Angaben entfallen. Das Datum stammt aus `DATE-OBS` des Stacks. Zusätzlich werden – sofern ein Preset gewählt wurde – `TELESCOP`, `FOCALLEN`, `INSTRUME` und `FILTER` in den FITS-Header geschrieben.
+
+**Mosaik:** Der Dateiname enthält zusätzlich `Mosaik <n>P` (Anzahl Panels); Gesamtbelichtung und Sub-Anzahl sind die Summe aller Panels. Beispiel: `IC1805 - Mosaik 4P - 2026-09-20 - 16h - 320x180s - L-Pro - Askar120APO - ASI2600MCDuo.fits`. Die einzelnen Panel-Stacks (nach Crop/GraXpert, ohne SPCC) werden zusätzlich in `mosaic_panels/` gesichert, z. B. zur Weiterverarbeitung in PixInsight.
 
 **Postprocessing** (alle linear, im selben Ordner):
 
@@ -180,6 +207,9 @@ Presets und Parameter stehen am Anfang von `astropipe.py`.
 | `BXT_ADJUST_HALOS` | `0.00` | BXT Halo-Anpassung |
 | `NXT_LINEAR_DENOISE` | `0.25` | NXT leichter Durchgang (vor StarX) |
 | `NXT_MAIN_DENOISE` | `0.85` | NXT-Hauptpass auf Starless |
+| `MOSAIC_FEATHER` | `100` | Breite der weichen Panel-Übergänge in Pixeln |
+| `MOSAIC_KEEP_PANELS` | `True` | Panel-Stacks in `mosaic_panels/` sichern |
+| `MOSAIC_MIN_PANELS` | `2` | Mindestanzahl erfolgreich gestackter Panels, sonst Abbruch |
 
 Auf macOS liegt GraXpert unter `/Applications/GraXpert.app/Contents/MacOS/GraXpert` – am sichersten ist es, diesen Pfad explizit in `GRAXPERT_BIN` einzutragen.
 
@@ -192,6 +222,8 @@ Die Frames werden als 32-Bit-Float und nach dem Debayern dreifarbig gespeichert,
 | ASI2600MC (26 MP) | ca. 0,7–1,0 GB | ca. 70–100 GB |
 | ASI585MC (8,3 MP) | ca. 0,2–0,3 GB | ca. 20–30 GB |
 
+Im Mosaik-Modus mit aktiviertem *Temp-Verzeichnis löschen* werden die Zwischendateien jedes Panels direkt nach dem Panel gelöscht – der Spitzenbedarf entspricht dann etwa dem des größten Panels.
+
 Vor großen Läufen freien Speicher prüfen und `tmp_siril` nach erfolgreichem Lauf löschen (Checkbox oder manuell).
 
 ### Hinweise und Einschränkungen
@@ -201,6 +233,7 @@ Vor großen Läufen freien Speicher prüfen und `tmp_siril` nach erfolgreichem L
 - Bias wird nur für die Flats verwendet; die Lights werden mit dem Master-Dark kalibriert (enthält den Offset). Ohne Dark wird kein Offset abgezogen. Flat-Darks werden nicht unterstützt.
 - Die Postprocessing-Dateien enthalten **keinen FITS-Header** (keine WCS-Astrometrie, keine Metadaten) und sind auf den Bereich 0–1 begrenzt.
 - Schlägt Plate-Solving, SPCC oder GraXpert fehl, wird der Schritt übersprungen und der Stack trotzdem gespeichert. Fehler in der Kalibrierung oder beim Stacken brechen das jeweilige Objekt ab.
+- **Mosaik:** Schlägt ein Panel fehl, wird das Mosaik ohne dieses Panel (mit Lücke) erstellt, solange mindestens `MOSAIC_MIN_PANELS` Panels gelungen sind. Die Ränder des Mosaiks werden nicht automatisch beschnitten. Die Panels brauchen ausreichend Überlappung (ca. 10–20 %) und müssen einzeln plate-lösbar sein.
 - Das Skript muss aus einer laufenden Siril-Instanz gestartet werden.
 
 ---
@@ -226,6 +259,7 @@ Vor großen Läufen freien Speicher prüfen und `tmp_siril` nach erfolgreichem L
 
 - **Multi-session stacking:** each session is calibrated with its own bias, flat and dark frames; all sessions are then registered together and stacked into one image.
 - **Batch mode:** processes every target folder in the Siril working directory in turn. An error on one target does not stop the batch.
+- **Mosaic mode:** stacks each panel separately (including multiple sessions per panel), removes the background per panel and assembles the panels astrometrically into one mosaic. Plate solving, SPCC and post-processing run once on the whole mosaic. Can be combined with batch mode.
 - **Calibration:** master bias, master flat and master dark per session (each optional), cosmetic correction from the dark, CFA equalisation, debayer.
 - **Optional per-sub background removal** (`seqsubsky`, first-degree polynomial).
 - **Registration:** two-pass with `-framing=min` – the result is automatically cropped to the area covered by all frames.
@@ -252,6 +286,14 @@ all sessions:  merge into one sequence
                           │
 (optional)     BXT → light NXT → StarX → main NXT pass
                                                        ← result 2: linear stars / starless
+```
+
+In **mosaic mode** the upper part (up to and including extra crop and GraXpert) runs for each panel separately. Then:
+
+```
+panel stacks → seqplatesolve → seqapplyreg -framing=max
+            → stack (overlap normalisation, feathering, -maximize)
+            → plate solving → SPCC → save → (optional) post-processing
 ```
 
 ### Requirements
@@ -308,7 +350,22 @@ Only `light/` is required; `bias/`, `flat/` and `dark/` are optional. Folder nam
 └── tmp_siril/                        ← ignored
 ```
 
-> **Caution:** without batch mode, **every** subfolder containing `light/` is treated as a session of the **same** target. If you use structure C and forget to enable batch mode, M51 and M101 end up in one combined stack. If the home folder contains both session subfolders and its own `light/`, only the subfolders are used.
+**D – Mosaic** (enable the *mosaic mode* checkbox)
+
+```
+<Home>/                         ← e.g. Heart
+├── Panel 1/
+│   ├── bias/  flat/  dark/  light/
+├── Panel 2/
+│   ├── Session a/   flat/ light/        ← multiple sessions per panel are possible
+│   └── Session b/   flat/ light/
+├── Panel 3/   ...
+└── Panel 4/   ...
+```
+
+With batch mode enabled as well: Home → target folders → panels → (sessions). For flats and darks shared by all panels, copy the files into every panel folder.
+
+> **Caution:** without batch mode, **every** subfolder containing `light/` is treated as a session of the **same** target. If you use structure C and forget to enable batch mode, M51 and M101 end up in one combined stack. If the home folder contains both session subfolders and its own `light/`, only the subfolders are used. Conversely, the panels of a mosaic must **never** be stacked as sessions without mosaic mode – registration to a single reference frame and the auto-crop to the common area make the result unusable.
 
 ### Usage
 
@@ -323,11 +380,12 @@ The interface is in German. Settings:
 | Telescope / reducer (*Teleskop / Reducer*) | EdgeHD 800 + 0.7x Reducer | Preset for focal length (plate solving) and file name; *aus FITS-Header* = values from the header |
 | Camera (*Kamera*) | Auto (from INSTRUME) | Preset for pixel size and SPCC sensor; *Auto* detects the sensor from the FITS keyword `INSTRUME` |
 | Filter | empty | For file name and FITS header; pick from list or type; empty = `FILTER` from the header |
-| Extra crop % per side (*Zusatz-Crop % je Rand*) | 1.0 | Additional crop per side after the auto-crop; 0 = off |
-| Batch mode (*Stapelmodus*) | off | Process all target folders in Home (structure C) |
+| Extra crop % per side (*Zusatz-Crop % je Rand*) | 1.0 | Additional crop per side after the auto-crop; 0 = off. In mosaic mode per panel |
+| Mosaic mode (*Mosaik-Modus*) | off | Subfolders are panels of a mosaic (structure D) |
+| Batch mode (*Stapelmodus*) | off | Process all target folders in Home (structure C; with mosaic mode: targets made of panels) |
 | Collect batch results in Home (*Stapel-Ergebnisse gesammelt im Home*) | on | Batch mode only: results go to Home instead of each target folder |
 | Background per sub (*Hintergrund pro Sub*) | off | Gradient removal on each calibrated sub, per session |
-| GraXpert on final stack | off | AI background extraction (subtraction, smoothing 0.5) |
+| GraXpert on final stack | off | AI background extraction (subtraction, smoothing 0.5). In mosaic mode per panel before assembly – strongly recommended for mosaics |
 | Plate solving | on | Astrometric solution of the stack |
 | SPCC colour calibration | on | Spectrophotometric Color Calibration (requires plate solving) |
 | Post-processing | off | RC Astro chain → stars + starless |
@@ -344,6 +402,8 @@ The interface is in German. Settings:
 Example: `M51 - 2026-05-14 - 6h15m - 125x180s - L-Pro - EdgeHD800-0.7x - ASI2600MCDuo.fits`
 
 Missing values are omitted. The date comes from the stack's `DATE-OBS`. If a preset is selected, `TELESCOP`, `FOCALLEN`, `INSTRUME` and `FILTER` are also written to the FITS header.
+
+**Mosaic:** the file name additionally contains `Mosaik <n>P` (number of panels); total exposure and sub count are the sum over all panels. Example: `IC1805 - Mosaik 4P - 2026-09-20 - 16h - 320x180s - L-Pro - Askar120APO - ASI2600MCDuo.fits`. The individual panel stacks (after crop/GraXpert, without SPCC) are also saved in `mosaic_panels/`, e.g. for further processing in PixInsight.
 
 **Post-processing** (all linear, same folder):
 
@@ -379,6 +439,9 @@ Presets and parameters are at the top of `astropipe.py`.
 | `BXT_ADJUST_HALOS` | `0.00` | BXT halo adjustment |
 | `NXT_LINEAR_DENOISE` | `0.25` | light NXT pass (before StarX) |
 | `NXT_MAIN_DENOISE` | `0.85` | main NXT pass on starless |
+| `MOSAIC_FEATHER` | `100` | width of the soft panel transitions in pixels |
+| `MOSAIC_KEEP_PANELS` | `True` | save panel stacks in `mosaic_panels/` |
+| `MOSAIC_MIN_PANELS` | `2` | minimum number of successfully stacked panels, otherwise abort |
 
 On macOS, GraXpert lives at `/Applications/GraXpert.app/Contents/MacOS/GraXpert` – setting this path explicitly in `GRAXPERT_BIN` is the safest option.
 
@@ -391,6 +454,8 @@ Frames are stored as 32-bit float, three-channel after debayering, and written a
 | ASI2600MC (26 MP) | approx. 0.7–1.0 GB | approx. 70–100 GB |
 | ASI585MC (8.3 MP) | approx. 0.2–0.3 GB | approx. 20–30 GB |
 
+In mosaic mode with *delete temp folder* enabled, each panel's intermediate files are deleted right after that panel – peak usage is then roughly that of the largest panel.
+
 Check free space before large runs and delete `tmp_siril` after a successful run (checkbox or manually).
 
 ### Notes and limitations
@@ -400,4 +465,5 @@ Check free space before large runs and delete `tmp_siril` after a successful run
 - Bias is only used for the flats; lights are calibrated with the master dark (which contains the offset). Without a dark no offset is subtracted. Flat darks are not supported.
 - Post-processing files carry **no FITS header** (no WCS astrometry, no metadata) and are clipped to 0–1.
 - If plate solving, SPCC or GraXpert fails, that step is skipped and the stack is still saved. Errors during calibration or stacking abort the affected target.
+- **Mosaic:** if a panel fails, the mosaic is built without it (with a gap) as long as at least `MOSAIC_MIN_PANELS` panels succeeded. Mosaic edges are not cropped automatically. Panels need sufficient overlap (approx. 10–20 %) and must be plate-solvable individually.
 - The script must be launched from a running Siril instance.

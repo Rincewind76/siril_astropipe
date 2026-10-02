@@ -26,6 +26,19 @@ STAPELMODUS (ersetzt autoprocess.py): Home = Ueberordner mit Objektordnern
 bias/dark/flat/light. Jedes Objekt wird nacheinander komplett verarbeitet;
 ein Fehler bei einem Objekt stoppt den Stapel nicht.
 
+MOSAIK-MODUS: Home = Objektordner, erste Unterebene = Panels. Jedes Panel
+enthaelt Sessions oder direkt bias/dark/flat/light:
+
+  <Home>/                  (z.B. Heart)
+    Panel 1/   bias/ dark/ flat/ light/
+    Panel 2/   Session a/ ...  Session b/ ...
+    ...
+-> jedes Panel wird einzeln gestackt (+ Zusatz-Crop, + optional GraXpert),
+-> Panels astrometrisch registriert (seqplatesolve + seqapplyreg -framing=max)
+-> Mosaik-Stack mit Overlap-Normalisierung + Feathering (-maximize)
+-> Plate-Solving -> SPCC -> Speichern -> optional Postprocessing auf dem Mosaik.
+Kombinierbar mit dem Stapelmodus (Objektordner -> Panels -> Sessions).
+
 Alle Ausgaben mit Endung .fits. Aus laufender Siril-Instanz starten.
 """
 
@@ -77,6 +90,11 @@ NXT_LINEAR_DENOISE, NXT_MAIN_DENOISE = "0.25", "0.85"
 
 GRAXPERT_BIN = ""            # leer = PATH-Suche ("graxpert"); sonst absoluter Pfad
 GRAXPERT_SMOOTHING = "0.5"
+
+# --- Mosaik ---
+MOSAIC_FEATHER     = "100"   # Feathering-Breite der Panel-Uebergaenge in Pixeln
+MOSAIC_KEEP_PANELS = True    # Panel-Stacks zusaetzlich in <Ausgabe>/mosaic_panels/ sichern
+MOSAIC_MIN_PANELS  = 2       # weniger erfolgreich gestackte Panels -> Abbruch
 
 # ============================================================================
 # Basis-Helfer
@@ -338,18 +356,23 @@ def detect_oscsensor(path, cfg):
         return SPCC_SENSOR_2600, f"ASI2600 erkannt ('{instr}')"
     return SPCC_SENSOR_585, f"585/Seestar angenommen ('{instr or 'INSTRUME leer'}')"
 
-def build_name(path, cfg):
+def build_name(path, cfg, tag="", expo=None):
+    """Dateiname aus Header + GUI-Auswahl. tag (z.B. 'Mosaik 4P' oder der
+    Panel-Name) wird hinter dem Objekt eingefuegt. expo = dict(LIVETIME=,
+    STACKCNT=) ueberschreibt die Belichtungsangaben (Mosaik: Summe der Panels)."""
     hdr = afits.getheader(str(path))
     obj  = sanitize(hdr.get("OBJECT", "")) or "Objekt"
     date_obs = str(hdr.get("DATE-OBS", "")).strip()
     date = date_obs[:10] if len(date_obs) >= 10 else ""
+    if expo:
+        hdr = dict(expo)
     live = hdr.get("LIVETIME")
     if live is None:
         live = float(hdr.get("STACKCNT", 0) or 0) * float(hdr.get("EXPTIME", 0) or 0)
     filt = sanitize(cfg["filter"]) or sanitize(hdr.get("FILTER", ""))
     tele = TELESCOPES[cfg["telescope"]]["label"]
     cam  = CAMERAS[cfg["camera"]]["label"]
-    parts = [p for p in (obj, date, fmt_exposure(live), fmt_subs(hdr),
+    parts = [p for p in (obj, sanitize(tag), date, fmt_exposure(live), fmt_subs(hdr),
                          filt, tele, cam) if p]
     return " - ".join(parts) + ".fits"
 
@@ -368,7 +391,9 @@ def update_header(path, cfg):
         if cfg["filter"].strip():
             h["FILTER"] = (cfg["filter"].strip(), "Filter (AstroPipe)")
 
-def finalize(siril, raw_stack, outdir, tmp, cfg):
+def prepare_stack(siril, raw_stack, tmp, cfg):
+    """Laedt den Roh-Stack und wendet Zusatz-Crop und optional GraXpert an.
+    Das Ergebnis bleibt in Siril geladen."""
     siril.cmd("load", safe_path(raw_stack))
 
     # Zusatz-Crop in % je Rand
@@ -397,14 +422,29 @@ def finalize(siril, raw_stack, outdir, tmp, cfg):
             log(siril, f"GraXpert uebersprungen: {e} "
                        f"(Syntax mit 'graxpert --help' pruefen)")
 
+
+def optics_args(cfg):
+    """-focal= / -pixelsize= aus den GUI-Presets (leer = aus dem Header)."""
+    tele, cam = TELESCOPES[cfg["telescope"]], CAMERAS[cfg["camera"]]
+    args = []
+    if tele["focal"]:
+        args.append(f"-focal={tele['focal']}")
+    if cam["pixel"]:
+        args.append(f"-pixelsize={cam['pixel']}")
+    return args
+
+
+def finalize(siril, raw_stack, outdir, tmp, cfg, tag="", expo=None, prepare=True):
+    """Crop/GraXpert (prepare=True) -> Plate-Solving -> SPCC -> Speichern mit
+    vollem Namen + Header. Gibt den Pfad des Ergebnisses zurueck."""
+    if prepare:
+        prepare_stack(siril, raw_stack, tmp, cfg)
+    else:
+        siril.cmd("load", safe_path(raw_stack))
+
     # Plate-Solving
     if cfg["platesolve"]:
-        ps = ["platesolve"]
-        tele, cam = TELESCOPES[cfg["telescope"]], CAMERAS[cfg["camera"]]
-        if tele["focal"]:
-            ps.append(f"-focal={tele['focal']}")
-        if cam["pixel"]:
-            ps.append(f"-pixelsize={cam['pixel']}")
+        ps = ["platesolve"] + optics_args(cfg)
         try:
             siril.cmd(*ps)
             log(siril, "Plate-Solving OK")
@@ -426,7 +466,7 @@ def finalize(siril, raw_stack, outdir, tmp, cfg):
     # Speichern mit finalem Namen + Header-Attribute
     tmp_final = tmp / "final_tmp.fits"
     siril.cmd("save", safe_path(tmp / "final_tmp"))
-    final_path = Path(outdir) / build_name(tmp_final, cfg)
+    final_path = Path(outdir) / build_name(tmp_final, cfg, tag=tag, expo=expo)
     shutil.copy(str(tmp_final), str(final_path))
     update_header(final_path, cfg)
     siril.cmd("load", safe_path(final_path))
@@ -485,13 +525,123 @@ def postprocess(siril, final_path, outdir, tmp, cfg):
     log(siril, "Bereit fuer VeraLux HMS (Starless) + Stretch der Sterne + StarComposer.")
 
 # ============================================================================
+# Mosaik
+# ============================================================================
+def discover_panels(obj):
+    """Panels = direkte Unterordner, die Sessions oder direkt light/ enthalten."""
+    return [d for d in sorted(Path(obj).iterdir())
+            if d.is_dir() and d.name.lower() != "tmp_siril" and discover_sessions(d)]
+
+def _hdr_float(hdr, key):
+    try:
+        return float(hdr.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+def stack_mosaic(siril, obj, outdir, tmp, cfg):
+    """Stackt jedes Panel einzeln (inkl. Crop/GraXpert), setzt die Panels
+    astrometrisch zu einem Mosaik zusammen. Gibt (mosaik_stack, tag, expo)
+    zurueck; Plate-Solving/SPCC folgen in finalize() auf dem ganzen Mosaik."""
+    panels = discover_panels(obj)
+    if len(panels) < MOSAIC_MIN_PANELS:
+        raise FileNotFoundError(
+            f"Mosaik: nur {len(panels)} Panel-Ordner gefunden "
+            f"(mindestens {MOSAIC_MIN_PANELS} noetig).")
+    log(siril, f"Mosaik: {len(panels)} Panel(s): " + ", ".join(p.name for p in panels))
+
+    mosaic_dir = tmp / "mosaic"
+    if mosaic_dir.exists():
+        shutil.rmtree(mosaic_dir, ignore_errors=True)
+    mosaic_dir.mkdir(parents=True, exist_ok=True)
+    keep_dir = Path(outdir) / "mosaic_panels"
+
+    n_ok, total_live, total_subs = 0, 0.0, 0
+    failed = []
+    for i, panel in enumerate(panels, 1):
+        log(siril, "")
+        log(siril, f"===== Panel {i}/{len(panels)}: {panel.name} =====")
+        tmp_p = tmp / f"panel_{i:02d}"
+        try:
+            raw = stack_all(siril, panel, tmp_p, cfg)
+            prepare_stack(siril, raw, tmp_p, cfg)       # Crop + optional GraXpert
+            n_ok += 1
+            target = mosaic_dir / f"pano_{n_ok:05d}"
+            siril.cmd("save", safe_path(target))
+            target = target.with_suffix(".fits")
+            hdr = afits.getheader(str(target))
+            total_live += _hdr_float(hdr, "LIVETIME") or \
+                _hdr_float(hdr, "STACKCNT") * _hdr_float(hdr, "EXPTIME")
+            total_subs += int(_hdr_float(hdr, "STACKCNT"))
+            if MOSAIC_KEEP_PANELS:
+                keep_dir.mkdir(parents=True, exist_ok=True)
+                keep = keep_dir / build_name(target, cfg, tag=panel.name)
+                shutil.copy(str(target), str(keep))
+                update_header(keep, cfg)
+                log(siril, f"  Panel-Stack gesichert: mosaic_panels/{keep.name}")
+        except Exception as e:
+            log(siril, f"  FEHLER in Panel {panel.name}: {e} -> Panel fehlt im Mosaik")
+            failed.append(panel.name)
+        finally:
+            # Zwischendateien des Panels frueh loeschen -> spart viel Platz
+            if cfg["del_tmp"]:
+                shutil.rmtree(tmp_p, ignore_errors=True)
+
+    if n_ok < MOSAIC_MIN_PANELS:
+        raise RuntimeError(f"Mosaik: nur {n_ok} Panel(s) erfolgreich gestackt.")
+    if failed:
+        log(siril, f"WARNUNG: Panels ohne Ergebnis: {', '.join(failed)} "
+                   f"-> das Mosaik hat Luecken.")
+
+    log(siril, "")
+    log(siril, f"Mosaik aus {n_ok} Panels zusammensetzen ...")
+    siril.cmd("cd", safe_path(mosaic_dir))
+    for old in mosaic_dir.glob("*.seq"):
+        old.unlink()
+
+    # 1) Astrometrische Loesung jedes Panels -> Registrierdaten in der Sequenz
+    ps = ["seqplatesolve", "pano_"] + optics_args(cfg) + ["-nocache", "-force"]
+    try:
+        siril.cmd(*ps)
+    except Exception as e:
+        if len(ps) > 4:
+            log(siril, f"  seqplatesolve mit Presets fehlgeschlagen ({e}) "
+                       f"-> neuer Versuch mit Header-Werten")
+            siril.cmd("seqplatesolve", "pano_", "-nocache", "-force")
+        else:
+            raise RuntimeError(f"seqplatesolve fehlgeschlagen: {e}")
+    log(siril, "  Panels plate-geloest")
+
+    # 2) Auf gemeinsame Leinwand projizieren, nichts abschneiden
+    siril.cmd("seqapplyreg", "pano_", "-framing=max")
+
+    # 3) Mosaik-Stack: keine Rejection (nur 1-2 Lagen je Pixel), Overlap-
+    #    Normalisierung gleicht Helligkeit der Panels an, Feathering blendet
+    #    die Uebergaenge, -maximize nutzt die volle Leinwand.
+    siril.cmd("stack", "r_pano_", "rej", "none",
+              "-norm=addscale", "-overlap_norm", "-rgb_equal", "-output_norm",
+              f"-feather={MOSAIC_FEATHER}", "-maximize", "-out=mosaic_result")
+
+    for ext in (".fits", ".fit"):
+        cand = mosaic_dir / f"mosaic_result{ext}"
+        if cand.exists():
+            expo = {"LIVETIME": total_live, "STACKCNT": total_subs}
+            return cand, f"Mosaik {n_ok}P", expo
+    raise FileNotFoundError("mosaic_result nicht gefunden.")
+
+# ============================================================================
 # Pipeline-Runner
 # ============================================================================
 def run_object(siril, obj, outdir, tmp, cfg):
-    """Ein Objekt komplett: Stack -> Finalisierung -> optional Post."""
+    """Ein Objekt komplett: Stack (oder Mosaik) -> Finalisierung -> optional Post."""
     tmp.mkdir(parents=True, exist_ok=True)
-    raw = stack_all(siril, obj, tmp, cfg)
-    final = finalize(siril, raw, outdir, tmp, cfg)
+    if cfg["mosaic"]:
+        raw, tag, expo = stack_mosaic(siril, obj, outdir, tmp, cfg)
+        # Crop/GraXpert liefen schon pro Panel -> hier nur Plate-Solving + SPCC
+        final = finalize(siril, raw, outdir, tmp, cfg, tag=tag, expo=expo,
+                         prepare=False)
+    else:
+        raw = stack_all(siril, obj, tmp, cfg)
+        final = finalize(siril, raw, outdir, tmp, cfg)
     if cfg["post"]:
         postprocess(siril, final, outdir, tmp, cfg)
     return final
@@ -507,9 +657,10 @@ def run_pipeline(siril, cfg):
         siril.cmd("setext", "fits")
 
         if cfg["batch"]:
+            has_data = discover_panels if cfg["mosaic"] else discover_sessions
             objects = [d for d in sorted(home.iterdir())
                        if d.is_dir() and d.name.lower() != "tmp_siril"
-                       and discover_sessions(d)]
+                       and has_data(d)]
             if not objects:
                 log(siril, "Stapelmodus: keine Objektordner mit Daten gefunden.")
                 return
@@ -584,6 +735,7 @@ def main():
     v_ps, v_spcc     = tk.BooleanVar(value=True),  tk.BooleanVar(value=True)
     v_post, v_del    = tk.BooleanVar(value=False), tk.BooleanVar(value=False)
     v_batch, v_b2p   = tk.BooleanVar(value=False), tk.BooleanVar(value=True)
+    v_mosaic         = tk.BooleanVar(value=False)
 
     row(0, "Teleskop / Reducer:",
         ttk.Combobox(frm, textvariable=v_tele, values=list(TELESCOPES), state="readonly"))
@@ -593,7 +745,8 @@ def main():
         ttk.Combobox(frm, textvariable=v_filt, values=FILTERS))
     row(3, "Zusatz-Crop % je Rand:", ttk.Entry(frm, textvariable=v_crop, width=8))
 
-    checks = [("Stapelmodus: alle Objektordner im Home verarbeiten", v_batch),
+    checks = [("Mosaik-Modus: Unterordner = Panels", v_mosaic),
+              ("Stapelmodus: alle Objektordner im Home verarbeiten", v_batch),
               ("Stapel-Ergebnisse gesammelt im Home (sonst je Objekt)", v_b2p),
               ("Hintergrund pro Sub (seqsubsky, pro Session)", v_subsky),
               ("GraXpert auf finalen Stack", v_grax),
@@ -606,10 +759,10 @@ def main():
             row=i, column=0, columnspan=2, sticky="w", pady=2)
 
     status = ttk.Label(frm, text="Bereit. Home-Verzeichnis vorher in Siril setzen!")
-    status.grid(row=13, column=0, columnspan=2, sticky="w", pady=(8, 4))
+    status.grid(row=4 + len(checks), column=0, columnspan=2, sticky="w", pady=(8, 4))
 
     btn = ttk.Button(frm, text="Start")
-    btn.grid(row=14, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+    btn.grid(row=5 + len(checks), column=0, columnspan=2, sticky="ew", pady=(4, 0))
     frm.columnconfigure(1, weight=1)
 
     def start():
@@ -617,7 +770,7 @@ def main():
                    crop_pct=v_crop.get(), subsky=v_subsky.get(), graxpert=v_grax.get(),
                    platesolve=v_ps.get(), spcc=v_spcc.get(), post=v_post.get(),
                    del_tmp=v_del.get(), batch=v_batch.get(),
-                   batch_to_parent=v_b2p.get())
+                   batch_to_parent=v_b2p.get(), mosaic=v_mosaic.get())
         btn.config(state="disabled")
         status.config(text="Laeuft... Fortschritt im Siril-Log.")
 
