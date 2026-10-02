@@ -67,6 +67,7 @@ TELESCOPES = {
     "EdgeHD 800 + 0.7x Reducer": {"focal": "1422", "label": "EdgeHD800-0.7x"},
     "EdgeHD 800 (nativ)":        {"focal": "2032", "label": "EdgeHD800"},
     "Askar 120APO + 1x Flattener": {"focal": "840", "label": "Askar120APO"},
+    "Askar 120APO + 0.8x Reducer": {"focal": "672", "label": "Askar120APO-0.8x"},
     "Seestar S30 Pro":           {"focal": "150",  "label": "SeestarS30Pro"},
     "aus FITS-Header":           {"focal": "",     "label": ""},
 }
@@ -731,9 +732,9 @@ def main():
     v_cam  = tk.StringVar(value=list(CAMERAS)[0])
     v_filt = tk.StringVar(value="")
     v_crop = tk.StringVar(value="1.0")
-    v_subsky, v_grax = tk.BooleanVar(value=False), tk.BooleanVar(value=False)
+    v_subsky, v_grax = tk.BooleanVar(value=False), tk.BooleanVar(value=True)
     v_ps, v_spcc     = tk.BooleanVar(value=True),  tk.BooleanVar(value=True)
-    v_post, v_del    = tk.BooleanVar(value=False), tk.BooleanVar(value=False)
+    v_post, v_del    = tk.BooleanVar(value=True), tk.BooleanVar(value=True)
     v_batch, v_b2p   = tk.BooleanVar(value=False), tk.BooleanVar(value=True)
     v_mosaic         = tk.BooleanVar(value=False)
 
